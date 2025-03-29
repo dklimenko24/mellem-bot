@@ -1,31 +1,30 @@
 import os
-import logging
 import math
 import asyncio
+import logging
 
 from aiogram import Bot, Dispatcher, F, types
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import Command
+from aiogram.filters.state import StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.filters.state import StateFilter
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-# ----- Получаем токен из переменных окружения -----
+# --- ИНИЦИАЛИЗАЦИЯ ---
 TOKEN = os.getenv("BOT_TOKEN")
 if not TOKEN:
-    raise ValueError("❌ BOT_TOKEN не найден! Убедитесь, что вы добавили переменную окружения BOT_TOKEN.")
+    raise ValueError("❌ BOT_TOKEN не найден!")
 
-# ----- Создаём бота и диспетчер -----
 bot = Bot(token=TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
-# ----- Описываем состояния -----
+# --- СОСТОЯНИЯ ---
 class OrderState(StatesGroup):
     waiting_for_material = State()
     waiting_for_size = State()
 
-# ----- Словари с оптовыми ценами для каждого материала -----
+# --- ЦЕНЫ (оптовые) ---
 KERAMIKA_PRICES = {
     "13x18": 1100,
     "15x20": 1400,
@@ -62,121 +61,95 @@ METAL_PRYAM_PRICES = {
     "40x50": 14000,
 }
 
-# Функция расчёта розничной цены с наценкой 30% и округлением вниз до ближайших 50 руб.
+# --- ПЕРЕСЧЁТ ЦЕНЫ ---
 def calculate_retail_price(wholesale_price: int) -> int:
-    retail = wholesale_price * 1.3
-    return math.floor(retail / 50) * 50
+    return math.floor(wholesale_price * 1.3 / 50) * 50
 
-# Функция для генерации inline-клавиатуры по словарю цен
-def create_size_keyboard(prices_dict: dict) -> InlineKeyboardMarkup:
-    keyboard = InlineKeyboardMarkup()
-    for size, wholesale_price in prices_dict.items():
-        retail_price = calculate_retail_price(wholesale_price)
-        button_text = f"{size} – {retail_price} руб."
-        keyboard.add(InlineKeyboardButton(text=button_text, callback_data=f"size_{size}"))
-    return keyboard
+# --- ГЕНЕРАЦИЯ КЛАВИАТУРЫ ---
+def create_size_keyboard(prices: dict) -> InlineKeyboardMarkup:
+    buttons = [
+        [InlineKeyboardButton(
+            text=f"{size} – {calculate_retail_price(price)} руб.",
+            callback_data=f"size_{size}"
+        )]
+        for size, price in prices.items()
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
-# ------------------- Хендлеры -------------------
-
+# --- ХЕНДЛЕРЫ ---
 async def cmd_start(message: types.Message, state: FSMContext):
-    """Обработчик для /start"""
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🟦 Керамика", callback_data="material_keramika")],
         [InlineKeyboardButton(text="🟨 Металлокерамика (овал)", callback_data="material_metal_oval")],
         [InlineKeyboardButton(text="🟥 Металлокерамика (прямоугольная)", callback_data="material_metal_pryam")],
         [InlineKeyboardButton(text="🔷 Своя форма", callback_data="material_custom")]
     ])
-    await message.answer(
-        "Привет! Я бот для оформления заказа на фотокерамику.\n\nВыберите тип изделия:",
-        reply_markup=keyboard
-    )
+    await message.answer("Привет! Выберите тип изделия:", reply_markup=keyboard)
     await state.set_state(OrderState.waiting_for_material)
 
 async def material_chosen(callback: types.CallbackQuery, state: FSMContext):
-    """Обработчик выбора материала"""
     material = callback.data.replace("material_", "")
     await state.update_data(material=material)
     await callback.answer()
-    
+
     if material == "keramika":
-        size_keyboard = create_size_keyboard(KERAMIKA_PRICES)
-        await callback.message.answer(
-            "Вы выбрали: керамика.\nТеперь выберите размер:",
-            reply_markup=size_keyboard
-        )
-        await state.update_data(prices_dict="keramika")
-        await state.set_state(OrderState.waiting_for_size)
+        prices = KERAMIKA_PRICES
     elif material == "metal_oval":
-        size_keyboard = create_size_keyboard(METAL_OVAL_PRICES)
-        await callback.message.answer(
-            "Вы выбрали: металлокерамика (овал).\nТеперь выберите размер:",
-            reply_markup=size_keyboard
-        )
-        await state.update_data(prices_dict="metal_oval")
-        await state.set_state(OrderState.waiting_for_size)
+        prices = METAL_OVAL_PRICES
     elif material == "metal_pryam":
-        size_keyboard = create_size_keyboard(METAL_PRYAM_PRICES)
-        await callback.message.answer(
-            "Вы выбрали: металлокерамика (прямоугольная).\nТеперь выберите размер:",
-            reply_markup=size_keyboard
-        )
-        await state.update_data(prices_dict="metal_pryam")
-        await state.set_state(OrderState.waiting_for_size)
+        prices = METAL_PRYAM_PRICES
     elif material == "custom":
-        await callback.message.answer("Функционал для 'Своей формы' в разработке. Оставайтесь с нами!")
+        await callback.message.answer("Функция 'своя форма' пока в разработке.")
         await state.clear()
+        return
     else:
-        await callback.message.answer("Выбранный материал пока не поддерживается.")
+        await callback.message.answer("Неизвестный материал.")
         await state.clear()
+        return
+
+    keyboard = create_size_keyboard(prices)
+    await callback.message.answer("Теперь выберите размер:", reply_markup=keyboard)
+    await state.update_data(prices_dict=material)
+    await state.set_state(OrderState.waiting_for_size)
 
 async def size_chosen(callback: types.CallbackQuery, state: FSMContext):
-    """Обработчик выбора размера"""
     size = callback.data.replace("size_", "")
     data = await state.get_data()
-    material = data.get("material", "неизвестно")
-    prices_dict_key = data.get("prices_dict")
-    
-    if prices_dict_key == "keramika":
-        wholesale_price = KERAMIKA_PRICES.get(size)
-    elif prices_dict_key == "metal_oval":
-        wholesale_price = METAL_OVAL_PRICES.get(size)
-    elif prices_dict_key == "metal_pryam":
-        wholesale_price = METAL_PRYAM_PRICES.get(size)
-    else:
-        wholesale_price = None
+    material = data.get("material")
+    prices_key = data.get("prices_dict")
 
-    if wholesale_price:
-        retail_price = calculate_retail_price(wholesale_price)
-        price_info = f"{retail_price} руб."
+    if prices_key == "keramika":
+        price = KERAMIKA_PRICES.get(size)
+    elif prices_key == "metal_oval":
+        price = METAL_OVAL_PRICES.get(size)
+    elif prices_key == "metal_pryam":
+        price = METAL_PRYAM_PRICES.get(size)
     else:
-        price_info = "N/A"
+        price = None
 
-    await callback.message.answer(
-        f"Отлично, вы выбрали материал: {material}\nРазмер: {size}\nРозничная цена: {price_info}\n\n"
-        "Дальше можно добавить логику для выбора надписи, фона, фото и прочего."
-    )
+    if price is None:
+        await callback.message.answer("Ошибка: размер не найден.")
+    else:
+        retail = calculate_retail_price(price)
+        await callback.message.answer(
+            f"Вы выбрали:\nМатериал: {material}\nРазмер: {size}\nЦена: {retail} руб."
+        )
+
     await state.clear()
 
-# ------------------- Регистрация хендлеров -------------------
+# --- РЕГИСТРАЦИЯ ХЕНДЛЕРОВ ---
 def register_handlers(dp: Dispatcher):
-    # Хендлер для команды /start
     dp.message.register(cmd_start, Command(commands=["start"]))
-
-    # Хендлер для выбора материала в состоянии waiting_for_material
-    dp.callback_query.register(
-        material_chosen,
+    dp.callback_query.register(material_chosen,
         F.data.startswith("material_"),
         StateFilter(OrderState.waiting_for_material)
     )
-
-    # Хендлер для выбора размера в состоянии waiting_for_size
-    dp.callback_query.register(
-        size_chosen,
+    dp.callback_query.register(size_chosen,
         F.data.startswith("size_"),
         StateFilter(OrderState.waiting_for_size)
     )
 
-# ------------------- Точка входа -------------------
+# --- ЗАПУСК БОТА ---
 async def main():
     logging.basicConfig(level=logging.INFO)
     register_handlers(dp)
