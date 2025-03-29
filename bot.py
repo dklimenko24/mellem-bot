@@ -3,9 +3,10 @@ import math
 import asyncio
 import logging
 import requests
+import io
 
 from aiogram import Bot, Dispatcher, F, types
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, BufferedInputFile
 from aiogram.filters import Command
 from aiogram.filters.state import StateFilter
 from aiogram.fsm.context import FSMContext
@@ -180,8 +181,14 @@ async def show_next_fonts(message: types.Message, state: FSMContext):
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text=f"Выбрать: {filename}", callback_data=f"font_{filename}")]
         ])
-        await bot.send_photo(chat_id=message.chat.id, photo=url, reply_markup=kb)
-        shown.append(filename)
+        try:
+            response = requests.get(url)
+            image_bytes = io.BytesIO(response.content)
+            image = BufferedInputFile(image_bytes.getvalue(), filename=filename)
+            await bot.send_photo(chat_id=message.chat.id, photo=image, reply_markup=kb)
+            shown.append(filename)
+        except Exception as e:
+            await message.answer(f"❌ Ошибка при загрузке {filename}: {e}")
 
     await state.update_data(shown_fonts=shown)
 
