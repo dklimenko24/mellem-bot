@@ -63,8 +63,8 @@ def get_font_urls():
     data = resp.json()
     font_urls = {}
     for file_info in data:
-        if file_info["type"] == "file":
-            filename = file_info["name"]
+        filename = file_info["name"]
+        if file_info["type"] == "file" and filename.lower().endswith((".jpg", ".jpeg", ".png")):
             raw_url = file_info["download_url"]
             font_urls[filename] = raw_url
     return font_urls
