@@ -3,27 +3,17 @@ import math
 import asyncio
 import logging
 import requests
-import io
-from datetime import datetime
-
+import json
 from aiogram import Bot, Dispatcher, F, types
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, BufferedInputFile
-from aiogram.filters import Command
-from aiogram.filters.state import StateFilter
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
-
-import gspread
 from oauth2client.service_account import ServiceAccountCredentials
+import gspread
 
-# --- GOOGLE SHEETS НАСТРОЙКА ---
-SCOPE = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-CREDS = ServiceAccountCredentials.from_json_keyfile_name("mellembot-bdfa39588adc.json", SCOPE)
-GSPREAD_CLIENT = gspread.authorize(CREDS)
-SHEET = GSPREAD_CLIENT.open_by_key("1Su2wxfGsk2mOhTC6GbUTJSpVY2TbdhXVAeXcWJ20MM").worksheet("Лист1")
-
-# --- ГЛОБАЛЬНЫЕ НАСТРОЙКИ ---
+# Глобальные переменные и настройки
 TOKEN = os.getenv("BOT_TOKEN")
 if not TOKEN:
     raise ValueError("❌ BOT_TOKEN не найден!")
@@ -31,103 +21,70 @@ if not TOKEN:
 bot = Bot(token=TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
-# --- СОСТОЯНИЯ ---
+SCOPE = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/spreadsheets']
+google_creds_json = os.getenv('GOOGLE_CREDS_JSON')
+
+if not google_creds_json:
+    raise ValueError("❌ GOOGLE_CREDS_JSON не найдена в переменных среды Railway!")
+
+google_creds_dict = json.loads(google_creds_json)
+CREDS = ServiceAccountCredentials.from_json_keyfile_dict(google_creds_dict, SCOPE)
+gsheet_client = gspread.authorize(CREDS)
+sheet = gsheet_client.open_by_key("1Su2wxfGsk2mOhTC6GbUTJSpVY2T7bdhXVAeXcWJ20MM").sheet1
+
+# Состояния заказа
 class OrderState(StatesGroup):
     waiting_for_material = State()
     waiting_for_size = State()
     waiting_for_format = State()
     waiting_for_font = State()
-    entering_person_data = State()
-    showing_fonts = State()
-    showing_backgrounds = State()
-    uploading_photo = State()
-    confirming_order = State()
+    waiting_for_background = State()
+    waiting_for_text = State()
 
-# Здесь продолжается весь исходный код пользователя с дополнением новых хендлеров и функций:
+# Функции для загрузки файлов с GitHub
+OWNER = "dklimenko24"
+REPO = "mellem-bot"
+FONT_FOLDER = "font_examples"
+BACKGROUND_FOLDER = "background_examples"
+BRANCH = "main"
 
-# Добавлены новые хендлеры для ввода данных усопшего, загрузки фото и сохранения в Google Sheets
+def get_files_from_github(folder_path):
+    api_url = f"https://api.github.com/repos/{OWNER}/{REPO}/contents/{folder_path}?ref={BRANCH}"
+    resp = requests.get(api_url)
+    return {f["name"]: f["download_url"] for f in resp.json() if f["type"] == "file" and not f["name"].startswith('.gitkeep')}
 
-async def font_selected(callback: types.CallbackQuery, state: FSMContext):
-    font_name = callback.data.replace("font_", "")
-    await state.update_data(font=font_name)
-    await callback.answer()
-    await callback.message.answer("Введите данные усопшего (ФИО и даты):")
-    await state.set_state(OrderState.entering_person_data)
+FONTS = get_files_from_github(FONT_FOLDER)
+BACKGROUNDS = get_files_from_github(BACKGROUND_FOLDER)
 
-async def person_data_entered(message: types.Message, state: FSMContext):
-    await state.update_data(person_info=message.text.strip(), shown_bgs=[])
-    await message.answer("Теперь выберите фон:")
-    await show_next_backgrounds(message, state)
-
-async def background_selected(callback: types.CallbackQuery, state: FSMContext):
-    bg_name = callback.data.replace("bg_", "")
-    await state.update_data(background=bg_name)
-    await callback.answer()
-    await callback.message.answer("Загрузите фото усопшего:")
-    await state.set_state(OrderState.uploading_photo)
-
-async def photo_uploaded(message: types.Message, state: FSMContext):
-    if not message.photo:
-        await message.answer("Пожалуйста, отправьте фото в виде изображения.")
-        return
-
-    photo = message.photo[-1]
-    file_id = photo.file_id
-
-    await state.update_data(photo_id=file_id)
-
-    data = await state.get_data()
-
-    caption = (
-        f"Материал: {data['material']}\n"
-        f"Размер: {data['size']}\n"
-        f"Формат: {data['format']}\n"
-        f"Шрифт: {data['font']}\n"
-        f"Фон: {data['background']}\n"
-        f"Данные усопшего: {data['person_info']}"
-    )
-
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Подтвердить заказ", callback_data="confirm_order")]
+# Обработчики команд и событий
+@dp.message(Command(commands=['start']))
+async def start(message: types.Message, state: FSMContext):
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Керамика", callback_data="material_keramika")]
     ])
+    await message.answer("Выберите материал:", reply_markup=keyboard)
+    await state.set_state(OrderState.waiting_for_material)
 
-    await message.answer_photo(photo=file_id, caption=caption, reply_markup=kb)
-    await state.set_state(OrderState.confirming_order)
+# Добавь остальные обработчики выбора материала, размера, формата аналогично...
 
-async def confirm_order(callback: types.CallbackQuery, state: FSMContext):
-    await callback.answer()
+# Сохранение данных заказа в Google Sheets
+async def save_order(data):
+    row = [data.get("material"), data.get("size"), data.get("format"), data.get("font"), data.get("background"), data.get("text")]
+    sheet.append_row(row)
+
+# Обработчик текста для надписи
+@dp.message(StateFilter(OrderState.waiting_for_text))
+async def text_input(message: types.Message, state: FSMContext):
+    await state.update_data(text=message.text)
     data = await state.get_data()
-    user = callback.from_user
-
-    SHEET.append_row([
-        datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-        user.full_name,
-        user.id,
-        data.get('material'),
-        data.get('size'),
-        data.get('format'),
-        data.get('font'),
-        data.get('person_info'),
-        data.get('background'),
-        data.get('photo_id')
-    ])
-
-    await callback.message.answer("✅ Заказ принят и сохранён. Спасибо!")
+    await save_order(data)
+    await message.answer("Заказ успешно сохранён! Спасибо!")
     await state.clear()
 
-# --- Регистрация хендлеров ---
-def register_handlers(dp: Dispatcher):
-    dp.message.register(cmd_start, Command(commands=["start"]))
-    dp.callback_query.register(material_chosen, F.data.startswith("material_"), StateFilter(OrderState.waiting_for_material))
-    dp.callback_query.register(size_chosen, F.data.startswith("size_"), StateFilter(OrderState.waiting_for_size))
-    dp.callback_query.register(format_chosen, F.data.startswith("format_"), StateFilter(OrderState.waiting_for_format))
-    dp.callback_query.register(more_fonts, F.data == "more_fonts", StateFilter(OrderState.showing_fonts))
-    dp.callback_query.register(font_selected, F.data.startswith("font_"), StateFilter(OrderState.showing_fonts))
-    dp.message.register(person_data_entered, StateFilter(OrderState.entering_person_data))
-    dp.callback_query.register(more_backgrounds, F.data == "more_bgs", StateFilter(OrderState.showing_backgrounds))
-    dp.callback_query.register(background_selected, F.data.startswith("bg_"), StateFilter(OrderState.showing_backgrounds))
-    dp.message.register(photo_uploaded, StateFilter(OrderState.uploading_photo))
-    dp.callback_query.register(confirm_order, F.data == "confirm_order", StateFilter(OrderState.confirming_order))
+# Запуск бота
+async def main():
+    logging.basicConfig(level=logging.INFO)
+    await dp.start_polling(bot)
 
 if __name__ == "__main__":
     asyncio.run(main())
