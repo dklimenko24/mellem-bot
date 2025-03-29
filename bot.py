@@ -26,6 +26,7 @@ class OrderState(StatesGroup):
     waiting_for_size = State()
     waiting_for_format = State()
     waiting_for_font = State()
+    showing_fonts = State()
 
 # --- ПАПКА, ОТКУДА БЕРЁМ ШРИФТЫ ---
 OWNER = "dklimenko24"
@@ -86,6 +87,11 @@ def format_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="🖼 Портрет с надписью", callback_data="format_with_text")],
         [InlineKeyboardButton(text="🖼 Портрет без надписи", callback_data="format_without_text")],
         [InlineKeyboardButton(text="🔤 Только надпись", callback_data="format_text_only")],
+    ])
+
+def more_fonts_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="➕ Показать ещё", callback_data="more_fonts")]
     ])
 
 # --- ХЕНДЛЕРЫ ---
@@ -150,25 +156,42 @@ async def size_chosen(callback: types.CallbackQuery, state: FSMContext):
 
 async def format_chosen(callback: types.CallbackQuery, state: FSMContext):
     format_choice = callback.data.replace("format_", "")
-    await state.update_data(format=format_choice)
+    await state.update_data(format=format_choice, shown_fonts=[])
     await callback.answer()
 
     if format_choice in ["with_text", "text_only"]:
-        await callback.message.answer("Выберите шрифт:")
-        for filename, url in FONTS.items():
-            kb = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text=f"Выбрать: {filename}", callback_data=f"font_{filename}")]
-            ])
-            try:
-                await callback.message.answer(f"Пробую отправить: {filename}\n{url}")
-                await bot.send_photo(chat_id=callback.from_user.id, photo=url, reply_markup=kb)
-            except Exception as e:
-                logging.error(f"Ошибка отправки шрифта {filename}: {e}")
-                await callback.message.answer(f"❌ Не удалось загрузить: {filename}\nОшибка: {e}\nСсылка: {url}")
-        await state.set_state(OrderState.waiting_for_font)
+        await show_next_fonts(callback.message, state)
     else:
         await callback.message.answer("Формат без надписи выбран. Продолжим дальше...")
         await state.clear()
+
+async def show_next_fonts(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    shown = data.get("shown_fonts", [])
+    all_fonts = list(FONTS.items())
+    remaining = [(f, u) for f, u in all_fonts if f not in shown]
+
+    next_batch = remaining[:3]
+    if not next_batch:
+        await message.answer("Все шрифты показаны.")
+        return
+
+    for filename, url in next_batch:
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text=f"Выбрать: {filename}", callback_data=f"font_{filename}")]
+        ])
+        await bot.send_photo(chat_id=message.chat.id, photo=url, reply_markup=kb)
+        shown.append(filename)
+
+    await state.update_data(shown_fonts=shown)
+
+    if len(remaining) > 3:
+        await message.answer("Показать ещё шрифты?", reply_markup=more_fonts_keyboard())
+    await state.set_state(OrderState.showing_fonts)
+
+async def more_fonts(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer()
+    await show_next_fonts(callback.message, state)
 
 async def font_selected(callback: types.CallbackQuery, state: FSMContext):
     font_name = callback.data.replace("font_", "")
@@ -177,13 +200,14 @@ async def font_selected(callback: types.CallbackQuery, state: FSMContext):
     await callback.message.answer(f"Вы выбрали шрифт: {font_name}\n(Здесь будет следующий шаг оформления заказа)")
     await state.clear()
 
-# --- РЕГИСТРАЦИЯ ХЕНДЛЕРОВ ---
+# --- РЕГИСТРАЦИЯ ---
 def register_handlers(dp: Dispatcher):
     dp.message.register(cmd_start, Command(commands=["start"]))
     dp.callback_query.register(material_chosen, F.data.startswith("material_"), StateFilter(OrderState.waiting_for_material))
     dp.callback_query.register(size_chosen, F.data.startswith("size_"), StateFilter(OrderState.waiting_for_size))
     dp.callback_query.register(format_chosen, F.data.startswith("format_"), StateFilter(OrderState.waiting_for_format))
-    dp.callback_query.register(font_selected, F.data.startswith("font_"), StateFilter(OrderState.waiting_for_font))
+    dp.callback_query.register(more_fonts, F.data == "more_fonts", StateFilter(OrderState.showing_fonts))
+    dp.callback_query.register(font_selected, F.data.startswith("font_"), StateFilter(OrderState.showing_fonts))
 
 # --- ЗАПУСК ---
 async def main():
