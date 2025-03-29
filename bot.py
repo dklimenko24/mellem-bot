@@ -64,7 +64,11 @@ def get_font_urls():
     font_urls = {}
     for file_info in data:
         filename = file_info["name"]
-        if file_info["type"] == "file" and filename.lower().endswith((".jpg", ".jpeg", ".png")):
+        if (
+            file_info["type"] == "file"
+            and filename.lower().endswith((".jpg", ".jpeg", ".png"))
+            and filename != ".gitkeep"
+        ):
             raw_url = file_info["download_url"]
             font_urls[filename] = raw_url
     return font_urls
