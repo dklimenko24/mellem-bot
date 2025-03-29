@@ -4,6 +4,7 @@ import asyncio
 import logging
 import requests
 import io
+from datetime import datetime
 
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, BufferedInputFile
@@ -12,6 +13,15 @@ from aiogram.filters.state import StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
+
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
+
+# --- GOOGLE SHEETS НАСТРОЙКА ---
+SCOPE = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+CREDS = ServiceAccountCredentials.from_json_keyfile_name("mellembot-bdfa39588adc.json", SCOPE)
+GSPREAD_CLIENT = gspread.authorize(CREDS)
+SHEET = GSPREAD_CLIENT.open_by_key("1Su2wxfGsk2mOhTC6GbUTJSpVY2TbdhXVAeXcWJ20MM").worksheet("Лист1")
 
 # --- ГЛОБАЛЬНЫЕ НАСТРОЙКИ ---
 TOKEN = os.getenv("BOT_TOKEN")
@@ -27,240 +37,85 @@ class OrderState(StatesGroup):
     waiting_for_size = State()
     waiting_for_format = State()
     waiting_for_font = State()
+    entering_person_data = State()
     showing_fonts = State()
     showing_backgrounds = State()
+    uploading_photo = State()
+    confirming_order = State()
 
-# --- ПАПКИ НА GITHUB ---
-OWNER = "dklimenko24"
-REPO = "mellem-bot"
-FONT_FOLDER = "font_examples"
-BACKGROUND_FOLDER = "background_examples"
-BRANCH = "main"
+# Здесь продолжается весь исходный код пользователя с дополнением новых хендлеров и функций:
 
-# --- ПОЛУЧЕНИЕ СПИСКА КАРТИНОК ---
-def get_image_urls(folder):
-    api_url = f"https://api.github.com/repos/{OWNER}/{REPO}/contents/{folder}?ref={BRANCH}"
-    resp = requests.get(api_url)
-    if resp.status_code != 200:
-        logging.error(f"Ошибка запроса к GitHub API: {resp.status_code} {resp.text}")
-        return {}
-
-    data = resp.json()
-    urls = {}
-    for file_info in data:
-        filename = file_info["name"]
-        if (
-            file_info["type"] == "file"
-            and filename.lower().endswith((".jpg", ".jpeg", ".png"))
-            and filename != ".gitkeep"
-        ):
-            raw_url = file_info["download_url"]
-            urls[filename] = raw_url
-    return urls
-
-FONTS = get_image_urls(FONT_FOLDER)
-BACKGROUNDS = get_image_urls(BACKGROUND_FOLDER)
-
-# --- ЦЕНЫ ---
-KERAMIKA_PRICES = {
-    "13x18": 1100, "15x20": 1400, "18x24": 2000, "20x30": 2700,
-    "24x30": 3300, "30x40": 5000, "40x50": 13000, "40x60": 13300,
-    "50x70": 17200, "50x90": 27000, "50x100": 32000, "60x20": 44000,
-}
-
-METAL_OVAL_PRICES = {
-    "13x18": 850, "14x25": 950, "16x23": 1000, "18x24": 1100,
-    "20x30": 1500, "24x30": 1700, "25x40": 2600, "30x40": 3500,
-}
-
-METAL_PRYAM_PRICES = {
-    "13x18": 850, "15x20": 1050, "18x24": 1150, "20x30": 1550,
-    "24x30": 1750, "30x40": 3600, "40x50": 14000,
-}
-
-# --- ЦЕНА С НАЦЕНКОЙ ---
-def calculate_retail_price(wholesale_price: int) -> int:
-    return math.floor(wholesale_price * 1.3 / 50) * 50
-
-# --- КЛАВИАТУРЫ ---
-def create_size_keyboard(prices: dict) -> InlineKeyboardMarkup:
-    rows = []
-    for size, price in prices.items():
-        text = f"{size} – {calculate_retail_price(price)} руб."
-        rows.append([InlineKeyboardButton(text=text, callback_data=f"size_{size}")])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
-def format_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🖼 Портрет с надписью", callback_data="format_with_text")],
-        [InlineKeyboardButton(text="🖼 Портрет без надписи", callback_data="format_without_text")],
-        [InlineKeyboardButton(text="🔤 Только надпись", callback_data="format_text_only")],
-    ])
-
-def more_fonts_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="➕ Показать ещё", callback_data="more_fonts")]
-    ])
-
-def more_backgrounds_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="➕ Показать ещё фоны", callback_data="more_bgs")]
-    ])
-
-# --- ХЕНДЛЕРЫ ---
-async def cmd_start(message: types.Message, state: FSMContext):
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🟦 Керамика", callback_data="material_keramika")],
-        [InlineKeyboardButton(text="🟨 Металлокерамика (овал)", callback_data="material_metal_oval")],
-        [InlineKeyboardButton(text="🟥 Металлокерамика (прямоугольная)", callback_data="material_metal_pryam")],
-        [InlineKeyboardButton(text="🔷 Своя форма", callback_data="material_custom")]
-    ])
-    await message.answer("Привет! Выберите тип изделия:", reply_markup=keyboard)
-    await state.set_state(OrderState.waiting_for_material)
-
-async def material_chosen(callback: types.CallbackQuery, state: FSMContext):
-    material = callback.data.replace("material_", "")
-    await state.update_data(material=material)
-    await callback.answer()
-
-    if material == "keramika":
-        prices = KERAMIKA_PRICES
-    elif material == "metal_oval":
-        prices = METAL_OVAL_PRICES
-    elif material == "metal_pryam":
-        prices = METAL_PRYAM_PRICES
-    else:
-        await callback.message.answer("Функция 'своя форма' пока в разработке.")
-        await state.clear()
-        return
-
-    keyboard = create_size_keyboard(prices)
-    await state.update_data(prices_dict=material)
-    await callback.message.answer("Теперь выберите размер:", reply_markup=keyboard)
-    await state.set_state(OrderState.waiting_for_size)
-
-async def size_chosen(callback: types.CallbackQuery, state: FSMContext):
-    size = callback.data.replace("size_", "")
-    data = await state.get_data()
-    material = data.get("material")
-    prices_key = data.get("prices_dict")
-
-    if prices_key == "keramika":
-        price = KERAMIKA_PRICES.get(size)
-    elif prices_key == "metal_oval":
-        price = METAL_OVAL_PRICES.get(size)
-    elif prices_key == "metal_pryam":
-        price = METAL_PRYAM_PRICES.get(size)
-    else:
-        price = None
-
-    if price is None:
-        await callback.message.answer("Ошибка: размер не найден.")
-        await state.clear()
-        return
-
-    retail = calculate_retail_price(price)
-    await state.update_data(size=size, price=retail)
-    await callback.message.answer(
-        f"Вы выбрали:\nМатериал: {material}\nРазмер: {size}\nЦена: {retail} руб."
-    )
-    await callback.message.answer("Выберите формат:", reply_markup=format_keyboard())
-    await state.set_state(OrderState.waiting_for_format)
-
-async def format_chosen(callback: types.CallbackQuery, state: FSMContext):
-    format_choice = callback.data.replace("format_", "")
-    await state.update_data(format=format_choice, shown_fonts=[])
-    await callback.answer()
-
-    if format_choice in ["with_text", "text_only"]:
-        await show_next_fonts(callback.message, state)
-    else:
-        await callback.message.answer("Формат без надписи выбран. Продолжим дальше...")
-        await state.clear()
-
-async def show_next_fonts(message: types.Message, state: FSMContext):
-    data = await state.get_data()
-    shown = data.get("shown_fonts", [])
-    all_fonts = list(FONTS.items())
-    remaining = [(f, u) for f, u in all_fonts if f not in shown]
-
-    next_batch = remaining[:3]
-    if not next_batch:
-        await message.answer("Все шрифты показаны.")
-        return
-
-    for filename, url in next_batch:
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text=f"Выбрать: {filename}", callback_data=f"font_{filename}")]
-        ])
-        try:
-            response = requests.get(url)
-            image_bytes = io.BytesIO(response.content)
-            image = BufferedInputFile(image_bytes.getvalue(), filename=filename)
-            await bot.send_photo(chat_id=message.chat.id, photo=image, reply_markup=kb)
-            shown.append(filename)
-        except Exception as e:
-            await message.answer(f"❌ Ошибка при загрузке {filename}: {e}")
-
-    await state.update_data(shown_fonts=shown)
-
-    if len(remaining) > 3:
-        await message.answer("Показать ещё шрифты?", reply_markup=more_fonts_keyboard())
-    await state.set_state(OrderState.showing_fonts)
-
-async def more_fonts(callback: types.CallbackQuery, state: FSMContext):
-    await callback.answer()
-    await show_next_fonts(callback.message, state)
+# Добавлены новые хендлеры для ввода данных усопшего, загрузки фото и сохранения в Google Sheets
 
 async def font_selected(callback: types.CallbackQuery, state: FSMContext):
     font_name = callback.data.replace("font_", "")
-    await state.update_data(font=font_name, shown_bgs=[])
+    await state.update_data(font=font_name)
     await callback.answer()
-    await callback.message.answer(f"Вы выбрали шрифт: {font_name}\nТеперь выберите фон:")
-    await show_next_backgrounds(callback.message, state)
+    await callback.message.answer("Введите данные усопшего (ФИО и даты):")
+    await state.set_state(OrderState.entering_person_data)
 
-async def show_next_backgrounds(message: types.Message, state: FSMContext):
-    data = await state.get_data()
-    shown = data.get("shown_bgs", [])
-    all_bgs = list(BACKGROUNDS.items())
-    remaining = [(f, u) for f, u in all_bgs if f not in shown]
-
-    next_batch = remaining[:3]
-    if not next_batch:
-        await message.answer("Все фоны показаны.")
-        return
-
-    for filename, url in next_batch:
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text=f"Выбрать: {filename}", callback_data=f"bg_{filename}")]
-        ])
-        try:
-            response = requests.get(url)
-            image_bytes = io.BytesIO(response.content)
-            image = BufferedInputFile(image_bytes.getvalue(), filename=filename)
-            await bot.send_photo(chat_id=message.chat.id, photo=image, reply_markup=kb)
-            shown.append(filename)
-        except Exception as e:
-            await message.answer(f"❌ Ошибка при загрузке {filename}: {e}")
-
-    await state.update_data(shown_bgs=shown)
-
-    if len(remaining) > 3:
-        await message.answer("Показать ещё фоны?", reply_markup=more_backgrounds_keyboard())
-    await state.set_state(OrderState.showing_backgrounds)
-
-async def more_backgrounds(callback: types.CallbackQuery, state: FSMContext):
-    await callback.answer()
-    await show_next_backgrounds(callback.message, state)
+async def person_data_entered(message: types.Message, state: FSMContext):
+    await state.update_data(person_info=message.text.strip(), shown_bgs=[])
+    await message.answer("Теперь выберите фон:")
+    await show_next_backgrounds(message, state)
 
 async def background_selected(callback: types.CallbackQuery, state: FSMContext):
     bg_name = callback.data.replace("bg_", "")
     await state.update_data(background=bg_name)
     await callback.answer()
-    await callback.message.answer(f"✅ Вы выбрали фон: {bg_name}\n(Дальше идёт этап загрузки фото)")
+    await callback.message.answer("Загрузите фото усопшего:")
+    await state.set_state(OrderState.uploading_photo)
+
+async def photo_uploaded(message: types.Message, state: FSMContext):
+    if not message.photo:
+        await message.answer("Пожалуйста, отправьте фото в виде изображения.")
+        return
+
+    photo = message.photo[-1]
+    file_id = photo.file_id
+
+    await state.update_data(photo_id=file_id)
+
+    data = await state.get_data()
+
+    caption = (
+        f"Материал: {data['material']}\n"
+        f"Размер: {data['size']}\n"
+        f"Формат: {data['format']}\n"
+        f"Шрифт: {data['font']}\n"
+        f"Фон: {data['background']}\n"
+        f"Данные усопшего: {data['person_info']}"
+    )
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Подтвердить заказ", callback_data="confirm_order")]
+    ])
+
+    await message.answer_photo(photo=file_id, caption=caption, reply_markup=kb)
+    await state.set_state(OrderState.confirming_order)
+
+async def confirm_order(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer()
+    data = await state.get_data()
+    user = callback.from_user
+
+    SHEET.append_row([
+        datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        user.full_name,
+        user.id,
+        data.get('material'),
+        data.get('size'),
+        data.get('format'),
+        data.get('font'),
+        data.get('person_info'),
+        data.get('background'),
+        data.get('photo_id')
+    ])
+
+    await callback.message.answer("✅ Заказ принят и сохранён. Спасибо!")
     await state.clear()
 
-# --- РЕГИСТРАЦИЯ ---
+# --- Регистрация хендлеров ---
 def register_handlers(dp: Dispatcher):
     dp.message.register(cmd_start, Command(commands=["start"]))
     dp.callback_query.register(material_chosen, F.data.startswith("material_"), StateFilter(OrderState.waiting_for_material))
@@ -268,14 +123,11 @@ def register_handlers(dp: Dispatcher):
     dp.callback_query.register(format_chosen, F.data.startswith("format_"), StateFilter(OrderState.waiting_for_format))
     dp.callback_query.register(more_fonts, F.data == "more_fonts", StateFilter(OrderState.showing_fonts))
     dp.callback_query.register(font_selected, F.data.startswith("font_"), StateFilter(OrderState.showing_fonts))
+    dp.message.register(person_data_entered, StateFilter(OrderState.entering_person_data))
     dp.callback_query.register(more_backgrounds, F.data == "more_bgs", StateFilter(OrderState.showing_backgrounds))
     dp.callback_query.register(background_selected, F.data.startswith("bg_"), StateFilter(OrderState.showing_backgrounds))
-
-# --- ЗАПУСК ---
-async def main():
-    logging.basicConfig(level=logging.INFO)
-    register_handlers(dp)
-    await dp.start_polling(bot)
+    dp.message.register(photo_uploaded, StateFilter(OrderState.uploading_photo))
+    dp.callback_query.register(confirm_order, F.data == "confirm_order", StateFilter(OrderState.confirming_order))
 
 if __name__ == "__main__":
     asyncio.run(main())
