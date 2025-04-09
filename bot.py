@@ -169,14 +169,20 @@ async def size_chosen(callback: types.CallbackQuery, state: FSMContext):
 
 async def format_chosen(callback: types.CallbackQuery, state: FSMContext):
     format_choice = callback.data.replace("format_", "")
-    await state.update_data(format=format_choice, shown_fonts=[])
+    await state.update_data(format=format_choice, shown_fonts=[], shown_bgs=[])
     await callback.answer()
 
-    if format_choice in ["with_text", "text_only"]:
+    if format_choice == "with_text":
         await show_next_fonts(callback.message, state)
+        await state.set_state(OrderState.showing_fonts)
+    elif format_choice == "text_only":
+        await callback.message.answer("Выбран только текст. Показываю фоны:")
+        await show_next_backgrounds(callback.message, state)
+        await state.set_state(OrderState.showing_backgrounds)
     else:
-        await callback.message.answer("Формат без надписи выбран. Продолжим дальше...")
-        await state.clear()
+        await callback.message.answer("Формат без надписи выбран. Показываю фоны:")
+        await show_next_backgrounds(callback.message, state)
+        await state.set_state(OrderState.showing_backgrounds)
 
 async def show_next_fonts(message: types.Message, state: FSMContext):
     data = await state.get_data()
@@ -218,6 +224,7 @@ async def font_selected(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
     await callback.message.answer(f"Вы выбрали шрифт: {font_name}\nТеперь выберите фон:")
     await show_next_backgrounds(callback.message, state)
+    await state.set_state(OrderState.showing_backgrounds)
 
 async def show_next_backgrounds(message: types.Message, state: FSMContext):
     data = await state.get_data()
