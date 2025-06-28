@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { Type, Download, Save, RotateCcw } from 'lucide-react'
 import { fabric } from 'fabric'
 import toast from 'react-hot-toast'

@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { Upload, Download, RotateCcw, Palette, Sliders, Save } from 'lucide-react'
 import { fabric } from 'fabric'
 import html2canvas from 'html2canvas'

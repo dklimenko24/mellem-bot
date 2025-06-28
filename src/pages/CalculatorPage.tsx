@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Calculator, ArrowRight, Upload, Check } from 'lucide-react'
 import { useOrder } from '../contexts/OrderContext'
