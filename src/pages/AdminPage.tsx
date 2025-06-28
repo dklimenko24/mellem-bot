@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react'
-import { Shield, Package, MessageSquare, Upload, Download } from 'lucide-react'
+import { Shield, Package } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
 import toast from 'react-hot-toast'
